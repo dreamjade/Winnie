@@ -50,27 +50,82 @@ def convolve_with_spatial_psfs(im_in, psfs, psf_inds, coron_tmap=None, use_gpu=F
         
     convolution_fn = psf_convolve_gpu if use_gpu else psf_convolve_cpu
     
+    # 1. Global Cropping: Find bounds of all non-zero pixels
     yi,xi = np.indices(im.shape)
     nonzero = im != 0.
     
     psf_yhw, psf_xhw = np.ceil(np.array(psfs.shape[-2:])/2.).astype(int)
     xi_nz, yi_nz = xi[nonzero], yi[nonzero]
+    
+    # Handle fully empty arrays gracefully
+    if len(xi_nz) == 0 or len(yi_nz) == 0:
+        return np.zeros_like(im)
+
     x1, x2 = int(max(xi_nz.min()-psf_xhw, 0)), int(min(xi_nz.max()+psf_xhw, im.shape[-1]))
     y1, y2 = int(max(yi_nz.min()-psf_yhw, 0)), int(min(yi_nz.max()+psf_yhw, im.shape[-2]))
     
     im_crop = im[y1:y2+1, x1:x2+1]
     psf_inds_crop = psf_inds[y1:y2+1, x1:x2+1]
     
-    if use_gpu or ncores==1:
-        imcon_crop = np.zeros(im_crop.shape, dtype=im.dtype)
+    imcon_crop = np.zeros(im_crop.shape, dtype=im.dtype)
+
+    # 2. Localized Convolution
+    if use_gpu or ncores == 1:
+        # Sequential / GPU path
         for i in np.unique(psf_inds_crop):
-            im_to_convolve = np.where(psf_inds_crop==i, im_crop, 0.)
-            imcon_crop += convolution_fn(im_to_convolve, psfs[i])
+            y_idx, x_idx = np.where(psf_inds_crop == i)
+            if len(y_idx) == 0: continue
+            
+            # Find localized bounding box for this specific PSF index
+            y1_p = max(y_idx.min() - psf_yhw, 0)
+            y2_p = min(y_idx.max() + psf_yhw, im_crop.shape[0] - 1)
+            x1_p = max(x_idx.min() - psf_xhw, 0)
+            x2_p = min(x_idx.max() + psf_xhw, im_crop.shape[1] - 1)
+            
+            patch = im_crop[y1_p:y2_p+1, x1_p:x2_p+1]
+            mask_patch = (psf_inds_crop[y1_p:y2_p+1, x1_p:x2_p+1] == i)
+            
+            patch_to_convolve = np.where(mask_patch, patch, 0.)
+            patch_convolved = convolution_fn(patch_to_convolve, psfs[i])
+            
+            imcon_crop[y1_p:y2_p+1, x1_p:x2_p+1] += patch_convolved
+
     else:
-        imcon_crop = np.sum(Parallel(n_jobs=ncores, prefer='threads')(delayed(convolution_fn)(np.where(psf_inds_crop==i, im_crop, 0.), psfs[i]) for i in np.unique(psf_inds_crop)), axis=0)
+        # CPU Parallel path
+        def _process_wedge(i):
+            y_idx, x_idx = np.where(psf_inds_crop == i)
+            if len(y_idx) == 0: return None
+            
+            # Find localized bounding box for this specific PSF index
+            y1_p = max(y_idx.min() - psf_yhw, 0)
+            y2_p = min(y_idx.max() + psf_yhw, im_crop.shape[0] - 1)
+            x1_p = max(x_idx.min() - psf_xhw, 0)
+            x2_p = min(x_idx.max() + psf_xhw, im_crop.shape[1] - 1)
+            
+            patch = im_crop[y1_p:y2_p+1, x1_p:x2_p+1]
+            mask_patch = (psf_inds_crop[y1_p:y2_p+1, x1_p:x2_p+1] == i)
+            
+            patch_to_convolve = np.where(mask_patch, patch, 0.)
+            patch_convolved = convolution_fn(patch_to_convolve, psfs[i])
+            
+            # Return the convolved small patch alongside its coordinates
+            return (patch_convolved, y1_p, y2_p, x1_p, x2_p)
+
+        # Distribute the convolution math across CPU threads
+        results = Parallel(n_jobs=ncores, prefer='threads')(
+            delayed(_process_wedge)(i) for i in np.unique(psf_inds_crop)
+        )
         
+        # Accumulate the calculated patches back into the main array sequentially
+        for res in results:
+            if res is not None:
+                patch_convolved, y1_p, y2_p, x1_p, x2_p = res
+                imcon_crop[y1_p:y2_p+1, x1_p:x2_p+1] += patch_convolved
+        
+    # 3. Final Output Assembly
     imcon = np.zeros_like(im)
     imcon[y1:y2+1, x1:x2+1] = imcon_crop
+    
     return imcon
 
 
