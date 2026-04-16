@@ -314,6 +314,7 @@ def rotate_image(im, angle, cent=None, new_cent=None, cval0=np.nan, prefilter=Tr
         return rotate_image_gpu(im, angle, cent=cent, new_cent=new_cent, cval0=cval0, prefilter=prefilter)
     return rotate_image_cpu(im, angle, cent=cent, new_cent=new_cent, cval0=cval0, prefilter=prefilter)
 
+
 def rotate_image_cpu(im, angle, cent=None, new_cent=None, cval0=np.nan, prefilter=True):
     """
     Rotates im by angle "angle" in degrees using CPU operations. Avoids "mixing" exact zero values,
