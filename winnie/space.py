@@ -1471,8 +1471,10 @@ class SpaceRDI:
         for i,c_coron in enumerate(self.c_coron_sci):
             deconv_psf_inds[i] = self.convolver.grid_inds_fn(c_coron, self.convolver.psf_offsets_polar, 1, shape=(self.ny, self.nx), 
                                                                 pxscale=self.convolver.pxscale, posang=self._posangs_sci[i], c_star=reduc.c_star)
-
-            deconv_coron_tmaps[i] = self.convolver.transmission_map_fn(self.convolver.inst_webbpsfext, c_coron, return_oversample=False,
+            if self.convolver.transmission_map_fn is None:
+                deconv_coron_tmaps[i] = 1.
+            else:
+                deconv_coron_tmaps[i] = self.convolver.transmission_map_fn(self.convolver.inst_webbpsfext, c_coron, return_oversample=False,
                                                                             osamp=self.convolver.osamp, nd_squares=False, 
                                                                             shape=(self.ny, self.nx), posang=self._posangs_sci[i],
                                                                             c_star=reduc.c_star)
